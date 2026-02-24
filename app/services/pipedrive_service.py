@@ -1,130 +1,126 @@
+import time
+import random
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import requests
-from requests.exceptions import RequestException, Timeout
-
+from requests import Response
 from app.core.config import settings
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger("pipedrive")
 
-# Reaproveitando exatamente o que você já usa hoje
-BASE_URL = settings.BASE_URL
-PIPEDRIVE_TOKEN = settings.PIPEDRIVE_TOKEN
+DEFAULT_TIMEOUT = 10  # segundos
+RETRIES = 3
+BACKOFF_SECONDS = 1.5
+JITTER_MAX_SECONDS = 0.35  # adiciona aleatoriedade pequena no backoff
 
-# Timeout padrão (se quiser, pode ajustar)
-REQUEST_TIMEOUT_SECONDS = 10
-
-
-# =========================
-# Exceções específicas
-# =========================
 
 class PipedriveError(Exception):
-    """Erro genérico ao falar com a API do Pipedrive."""
+    """Erro base para falhas na integração Pipedrive."""
 
 
-class PipedriveUnavailableError(PipedriveError):
-    """API indisponível (timeout, erro de rede ou HTTP 5xx)."""
+class PipedriveAuthError(PipedriveError):
+    """Falha de autenticação (token inválido/ausente)."""
 
 
-class PipedriveDealNotFoundError(PipedriveError):
-    """Deal não encontrado (HTTP 404 ou data vazia)."""
+class PipedriveNotFoundError(PipedriveError):
+    """Recurso não encontrado (deal inexistente)."""
 
 
-class PipedriveInvalidResponseError(PipedriveError):
-    """Resposta inesperada ou malformada da API (JSON inválido, sem campo data etc.)."""
+class PipedriveRateLimitError(PipedriveError):
+    """Rate limit atingido (429)."""
 
 
-# =========================
-# Funções de serviço
-# =========================
-
-def _get_auth_params() -> Dict[str, Any]:
-    """
-    Monta os parâmetros de autenticação da API.
-    """
-    if not PIPEDRIVE_TOKEN:
-        logger.error("PIPEDRIVE_TOKEN não está configurado nas variáveis de ambiente.")
-        raise PipedriveError("Token da API do Pipedrive não configurado.")
-    return {"api_token": PIPEDRIVE_TOKEN}
+def _validate_settings() -> None:
+    if not settings.BASE_URL:
+        raise PipedriveError("BASE_URL não configurada no .env (ex.: https://api.pipedrive.com/v1).")
+    if not settings.PIPEDRIVE_TOKEN:
+        raise PipedriveAuthError("PIPEDRIVE_TOKEN não configurado no .env.")
 
 
-def buscar_deal(deal_id: int) -> Dict[str, Any]:
-    """
-    Busca um negócio (deal) no Pipedrive.
+def _build_url(deal_id: int) -> str:
+    return f"{settings.BASE_URL.rstrip('/')}/deals/{deal_id}"
 
-    Retorna:
-        dict com os dados do deal (campo 'data' da resposta do Pipedrive)
 
-    Erros possíveis:
-        - PipedriveDealNotFoundError: deal não existe (404 ou data vazia)
-        - PipedriveUnavailableError: timeout, erro de rede ou HTTP 5xx
-        - PipedriveInvalidResponseError: JSON malformado ou sem 'data'
-        - PipedriveError: outros erros gerais (configuração, HTTP 4xx genérico)
-    """
-
-    url = f"{BASE_URL}/deals/{deal_id}"
-    params = _get_auth_params()
-
-    logger.info(f"[PIPEDRIVE] Buscando deal_id={deal_id} em {url}")
-
-    # 1) Chamada HTTP com timeout e tratamento de erro de rede
+def _parse_deal(resp: Response) -> Dict[str, Any]:
     try:
-        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
-    except Timeout as e:
-        logger.exception(f"[PIPEDRIVE] Timeout ao consultar deal_id={deal_id}")
-        raise PipedriveUnavailableError("Timeout ao consultar a API do Pipedrive.") from e
-    except RequestException as e:
-        logger.exception(f"[PIPEDRIVE] Erro de rede ao consultar deal_id={deal_id}")
-        raise PipedriveUnavailableError("Erro de rede ao consultar a API do Pipedrive.") from e
+        payload = resp.json()
+    except Exception as e:
+        raise PipedriveError(f"Resposta do Pipedrive não é JSON válido: {e}") from e
 
-    status = response.status_code
+    data = payload.get("data")
+    if not data:
+        # Pipedrive pode retornar success=false ou data=null
+        raise PipedriveError("Deal não encontrado ou resposta sem campo 'data'.")
+    return data
 
-    # 2) HTTP 404 → negócio não encontrado
-    if status == 404:
-        logger.warning(f"[PIPEDRIVE] Deal {deal_id} não encontrado (HTTP 404).")
-        raise PipedriveDealNotFoundError(f"Negócio {deal_id} não foi encontrado no Pipedrive.")
 
-    # 3) HTTP 5xx → indisponibilidade temporária
-    if 500 <= status <= 599:
-        logger.error(
-            f"[PIPEDRIVE] Erro 5xx ao consultar deal_id={deal_id}: "
-            f"status={status}, body={response.text}"
-        )
-        raise PipedriveUnavailableError(
-            f"Pipedrive retornou erro {status} ao buscar o negócio."
-        )
+def buscar_deal(deal_id: int, *, timeout: int = DEFAULT_TIMEOUT) -> Dict[str, Any]:
+    """
+    Busca um Deal no Pipedrive via API v1.
+    - Retry com backoff em erros transitórios (5xx, timeouts, conexão) e 429.
+    - Erros 401/403 e 404 não fazem retry (falhas definitivas).
+    """
+    _validate_settings()
 
-    # 4) Outros códigos não-ok (4xx ≠ 404, 3xx estranhos, etc.)
-    if not response.ok:
-        logger.error(
-            f"[PIPEDRIVE] Erro HTTP ao consultar deal_id={deal_id}: "
-            f"status={status}, body={response.text}"
-        )
-        raise PipedriveError(
-            f"Erro na API do Pipedrive (HTTP {status}) ao buscar o negócio."
-        )
+    url = _build_url(deal_id)
+    params = {"api_token": settings.PIPEDRIVE_TOKEN}
 
-    # 5) Validar JSON
-    try:
-        body = response.json()
-    except ValueError as e:
-        logger.exception(
-            f"[PIPEDRIVE] Resposta inválida (JSON) ao buscar deal_id={deal_id}: {response.text}"
-        )
-        raise PipedriveInvalidResponseError(
-            "Resposta inválida do Pipedrive (JSON malformado)."
-        ) from e
+    last_err: Optional[Exception] = None
 
-    # 6) Verificar campo 'data' (equivalente ao seu if not data.get("data"))
-    if not body.get("data"):
-        logger.warning(
-            f"[PIPEDRIVE] Resposta sem dados para deal_id={deal_id}: {body}"
-        )
-        raise PipedriveDealNotFoundError("Deal não encontrado.")
+    for attempt in range(1, RETRIES + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
 
-    deal = body["data"]
+            # Tratar status codes com mais precisão
+            if resp.status_code in (401, 403):
+                raise PipedriveAuthError(f"Auth falhou (HTTP {resp.status_code}). Verifique o token.")
+            if resp.status_code == 404:
+                raise PipedriveNotFoundError(f"Deal {deal_id} não encontrado (HTTP 404).")
+            if resp.status_code == 429:
+                # Rate limit: respeitar Retry-After se existir
+                retry_after = resp.headers.get("Retry-After")
+                wait = float(retry_after) if retry_after and retry_after.isdigit() else (BACKOFF_SECONDS * attempt)
+                wait += random.random() * JITTER_MAX_SECONDS
+                log.warning(f"Rate limit (429) ao buscar deal_id={deal_id}. Aguardando {wait:.2f}s e tentando novamente...")
+                time.sleep(wait)
+                continue
 
-    logger.info(f"[PIPEDRIVE] Deal {deal_id} obtido com sucesso.")
-    return deal
+            # Para demais códigos, levanta erro se não for 2xx
+            resp.raise_for_status()
+
+            deal = _parse_deal(resp)
+            log.info(f"Deal carregado com sucesso: deal_id={deal_id}")
+            return deal
+
+        except (PipedriveAuthError, PipedriveNotFoundError) as e:
+            # Falhas definitivas: não adianta retry
+            log.error(f"Falha definitiva ao buscar deal_id={deal_id}: {e}")
+            raise
+
+        except requests.Timeout as e:
+            last_err = e
+            log.warning(f"Timeout ao buscar deal_id={deal_id} (tentativa {attempt}/{RETRIES}).")
+
+        except requests.RequestException as e:
+            # Conexão, DNS, 5xx após raise_for_status, etc.
+            last_err = e
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            log.warning(
+                f"Erro de rede/HTTP ao buscar deal_id={deal_id} "
+                f"(tentativa {attempt}/{RETRIES}) status={status}: {e}"
+            )
+
+        except PipedriveError as e:
+            # Erro de parsing/JSON/data ausente — pode ser transitório dependendo do caso
+            last_err = e
+            log.warning(f"Erro ao interpretar resposta do Pipedrive deal_id={deal_id} (tentativa {attempt}/{RETRIES}): {e}")
+
+        # Retry/backoff para erros transitórios
+        if attempt < RETRIES:
+            sleep_s = (BACKOFF_SECONDS * attempt) + (random.random() * JITTER_MAX_SECONDS)
+            time.sleep(sleep_s)
+        else:
+            msg = f"Falha ao buscar deal no Pipedrive após {RETRIES} tentativas (deal_id={deal_id}): {last_err}"
+            log.error(msg)
+            raise PipedriveError(msg) from last_err
