@@ -84,3 +84,5 @@ def mark_generated(deal_id: int, stage_id: int) -> None:
     logger.info(
         f"[PROPOSAL_STATE] mark_generated(deal_id={deal_id}, stage_id={stage_id}, generated_at={ts})"
     )
+
+    print("[PG] proposal_state_service_pg em uso")

@@ -1,18 +1,21 @@
-import time
 import logging
+import time
+from typing import Any, Optional
+
 from fastapi import APIRouter
+
+from app.api.schemas import PipedriveWebhookPayload
+from app.core.config import settings
 from app.services.pdf_service import gerar_pdf
 from app.services.pipedrive_service import (
-    buscar_deal,
     PipedriveError,
-    PipedriveUnavailableError,
-    PipedriveDealNotFoundError,
     PipedriveInvalidResponseError,
+    PipedriveNotFoundError,
+    PipedriveRateLimitError,
+    PipedriveUnavailableError,
+    buscar_deal,
 )
-from app.services.proposal_state_service_pg import has_generated, mark_generated
 from app.services.proposal_state import has_generated, mark_generated
-from app.core.config import settings
-from app.api.schemas import PipedriveWebhookPayload
 
 router = APIRouter()
 
@@ -25,45 +28,182 @@ MQL_PIPELINE_ID = 4
 ENTRADA_LEADS_STAGE_ID = 21
 
 
-def _normalize_cliente(title) -> str:
+# ============================================================================
+# Helpers de normalização
+# ============================================================================
+
+def _normalize_cliente(title: Any) -> str:
     if title is None:
         return "Cliente sem nome"
+
     title_str = str(title).strip()
     return title_str if title_str else "Cliente sem nome"
 
 
-def _normalize_valor(value) -> float:
+def _normalize_valor(value: Any) -> float:
     if value is None:
         return 0.0
+
     try:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
 
 
-def _to_int_or_none(value):
+def _to_int_or_none(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+
     try:
-        if value is None:
-            return None
         return int(value)
     except (TypeError, ValueError):
         return None
 
 
+# ============================================================================
+# Helpers de resposta / logs
+# ============================================================================
+
+def _elapsed_ms(start_time: float) -> float:
+    return (time.monotonic() - start_time) * 1000
+
+
+def _webhook_response(
+    status: str,
+    *,
+    gerado: bool,
+    arquivo: Optional[str] = None,
+) -> dict:
+    response = {
+        "status": status,
+        "modo": settings.APP_ENV,
+        "gerado": gerado,
+    }
+    if arquivo:
+        response["arquivo"] = arquivo
+    return response
+
+
 def _log_context(
     *,
-    deal_id=None,
-    pipeline_id=None,
-    stage_id=None,
-    prev_stage_id=None,
-    correlation_id=None,
+    deal_id: Optional[int] = None,
+    pipeline_id: Optional[int] = None,
+    stage_id: Optional[int] = None,
+    prev_stage_id: Optional[int] = None,
+    correlation_id: Optional[str] = None,
 ) -> str:
     return (
         f"[deal_id={deal_id} pipeline_id={pipeline_id} "
-        f"stage_id={stage_id} prev_stage_id={prev_stage_id} "
-        f"corr={correlation_id}]"
+        f"stage_id={stage_id} prev_stage_id={prev_stage_id} corr={correlation_id}]"
     )
 
+
+def _build_pdf_payload(*, deal_id: int, title: Any, value: Any) -> dict:
+    return {
+        "id": deal_id,
+        "cliente": _normalize_cliente(title),
+        "valor": _normalize_valor(value),
+    }
+
+
+# ============================================================================
+# Fluxos de domínio
+# ============================================================================
+
+def _handle_dev_mock_flow(start_time: float) -> dict:
+    """
+    Fluxo de desenvolvimento (mock) para facilitar testes locais sem depender do Pipedrive.
+    """
+    deal_id = 999
+    stage_id = ENTRADA_LEADS_STAGE_ID
+    pipeline_id = MQL_PIPELINE_ID
+    prev_stage_id = None
+    correlation_id = None
+
+    ctx = _log_context(
+        deal_id=deal_id,
+        pipeline_id=pipeline_id,
+        stage_id=stage_id,
+        prev_stage_id=prev_stage_id,
+        correlation_id=correlation_id,
+    )
+
+    logger.info("%s Rodando em modo DEV (mock)", ctx)
+
+    if has_generated(deal_id, stage_id):
+        logger.info(
+            "%s [DEV] Ignorado: já gerado. elapsed=%.1fms",
+            ctx,
+            _elapsed_ms(start_time),
+        )
+        return _webhook_response("Ignorado: proposta já gerada", gerado=False)
+
+    dados = _build_pdf_payload(deal_id=deal_id, title="Cliente Teste", value="5000")
+
+    logger.info("%s [DEV] Gerando PDF...", ctx)
+    pdf_path = gerar_pdf(dados)
+    mark_generated(deal_id, stage_id)
+
+    logger.info(
+        "%s [DEV] PDF gerado. arquivo=%s elapsed=%.1fms",
+        ctx,
+        pdf_path,
+        _elapsed_ms(start_time),
+    )
+    return _webhook_response("PDF gerado com sucesso", gerado=True, arquivo=pdf_path)
+
+
+def _extract_webhook_fields(payload: PipedriveWebhookPayload) -> dict:
+    data = payload.data
+    previous = payload.previous
+    meta = payload.meta
+
+    correlation_id = meta.correlation_id if meta else None
+    pipeline_id = data.pipeline_id if data else None
+    stage_id = data.stage_id if data else None
+    prev_stage_id = previous.stage_id if previous else None
+
+    # deal_id pode vir em data.id (int) ou meta.entity_id (string)
+    raw_deal_id = data.id if data else None
+    if raw_deal_id is None and meta:
+        raw_deal_id = meta.entity_id
+
+    deal_id = _to_int_or_none(raw_deal_id)
+
+    return {
+        "data": data,
+        "previous": previous,
+        "meta": meta,
+        "deal_id": deal_id,
+        "pipeline_id": pipeline_id,
+        "stage_id": stage_id,
+        "prev_stage_id": prev_stage_id,
+        "correlation_id": correlation_id,
+    }
+
+
+def _should_ignore_by_target(pipeline_id: Optional[int], stage_id: Optional[int]) -> bool:
+    return pipeline_id != MQL_PIPELINE_ID or stage_id != ENTRADA_LEADS_STAGE_ID
+
+
+def _fetch_deal_if_needed(*, deal_id: int, title_from_webhook: Any, value_from_webhook: Any, ctx: str) -> Optional[dict]:
+    """
+    Busca no Pipedrive apenas quando title/value não vierem no webhook.
+    """
+    has_title = bool(title_from_webhook)
+    has_value = value_from_webhook is not None
+
+    if has_title or has_value:
+        logger.info("%s Usando title/value do webhook (quando disponíveis).", ctx)
+        return None
+
+    logger.info("%s Buscando dados no Pipedrive...", ctx)
+    return buscar_deal(deal_id)
+
+
+# ============================================================================
+# Endpoint
+# ============================================================================
 
 @router.post("/webhook")
 async def receber_webhook(payload: PipedriveWebhookPayload):
@@ -71,75 +211,34 @@ async def receber_webhook(payload: PipedriveWebhookPayload):
     Webhook do Pipedrive (v2.0), tipado com Pydantic.
 
     Regras:
-    - Só gera quando pipeline_id == MQL_PIPELINE_ID e stage_id == ENTRADA_LEADS_STAGE_ID
-    - Idempotência: por (deal_id, stage_id) em SQLite
-    - Em caso de erro operacional (Pipedrive off, resposta inválida etc.): retorna 200 com "Erro controlado"
-      para evitar retries em cascata.
+    - Só gera quando pipeline_id == 4 e stage_id == 21
+    - Idempotência por (deal_id, stage_id), via storage configurado (DEV/PROD)
+    - Erros operacionais retornam 200 (erro controlado) para evitar retries em cascata
     """
     start_time = time.monotonic()
 
     try:
-        # ---------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # DEV (mock)
-        # ---------------------------------------------------------------------
+        # ------------------------------------------------------------------
         if settings.APP_ENV == "DEV":
-            deal_id = 999
-            stage_id = ENTRADA_LEADS_STAGE_ID
-            pipeline_id = MQL_PIPELINE_ID
-            prev_stage_id = None
-            correlation_id = None
+            return _handle_dev_mock_flow(start_time)
 
-            ctx = _log_context(
-                deal_id=deal_id,
-                pipeline_id=pipeline_id,
-                stage_id=stage_id,
-                prev_stage_id=prev_stage_id,
-                correlation_id=correlation_id,
-            )
-            logger.info(f"{ctx} Rodando em modo DEV (mock)")
-
-            dados = {
-                "id": deal_id,
-                "cliente": _normalize_cliente("Cliente Teste"),
-                "valor": _normalize_valor("5000"),
-            }
-
-            if has_generated(deal_id, stage_id):
-                elapsed_ms = (time.monotonic() - start_time) * 1000
-                logger.info(f"{ctx} [DEV] Ignorado: já gerado. elapsed={elapsed_ms:.1f}ms")
-                return {"status": "Ignorado: proposta já gerada", "modo": settings.APP_ENV, "gerado": False}
-
-            logger.info(f"{ctx} [DEV] Gerando PDF...")
-            pdf_path = gerar_pdf(dados)
-            mark_generated(deal_id, stage_id)
-
-            elapsed_ms = (time.monotonic() - start_time) * 1000
-            logger.info(f"{ctx} [DEV] PDF gerado. arquivo={pdf_path} elapsed={elapsed_ms:.1f}ms")
-            return {"status": "PDF gerado com sucesso", "arquivo": pdf_path, "modo": settings.APP_ENV, "gerado": True}
-
-        # ---------------------------------------------------------------------
-        # PROD
-        # ---------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # PROD (payload real)
+        # ------------------------------------------------------------------
         if payload.data is None:
-            # ✅ Não devolver 400 para webhook em produção: devolve 200 e loga
             logger.warning("[WEBHOOK] Ignorado: payload sem 'data'.")
-            return {"status": "Ignorado: payload sem data", "modo": settings.APP_ENV, "gerado": False}
+            return _webhook_response("Ignorado: payload sem data", gerado=False)
 
-        data = payload.data
-        previous = payload.previous
-        meta = payload.meta
+        fields = _extract_webhook_fields(payload)
 
-        correlation_id = meta.correlation_id if meta is not None else None
-        pipeline_id = data.pipeline_id
-        stage_id = data.stage_id
-        prev_stage_id = previous.stage_id if previous is not None else None
-
-        # ✅ deal_id pode vir como int em data.id ou string em meta.entity_id
-        deal_id = data.id
-        if deal_id is None and meta is not None:
-            deal_id = _to_int_or_none(meta.entity_id)
-        else:
-            deal_id = _to_int_or_none(deal_id)
+        deal_id = fields["deal_id"]
+        pipeline_id = fields["pipeline_id"]
+        stage_id = fields["stage_id"]
+        prev_stage_id = fields["prev_stage_id"]
+        correlation_id = fields["correlation_id"]
+        data = fields["data"]
 
         ctx = _log_context(
             deal_id=deal_id,
@@ -149,91 +248,112 @@ async def receber_webhook(payload: PipedriveWebhookPayload):
             correlation_id=correlation_id,
         )
 
-        logger.info(f"{ctx} Payload recebido (Pydantic):")
+        logger.info("%s Payload recebido (Pydantic).", ctx)
         logger.info(payload.model_dump_json(indent=2, by_alias=True))
 
-        # 0) Validar pipeline/stage presentes
+        # 0) Campos mínimos
         if pipeline_id is None or stage_id is None:
-            logger.warning(f"{ctx} Ignorado: pipeline_id/stage_id ausentes.")
-            return {"status": "Ignorado: pipeline/stage ausentes", "modo": settings.APP_ENV, "gerado": False}
+            logger.warning("%s Ignorado: pipeline_id/stage_id ausentes.", ctx)
+            return _webhook_response("Ignorado: pipeline/stage ausentes", gerado=False)
 
-        # 1) FILTRO alvo
-        if pipeline_id != MQL_PIPELINE_ID or stage_id != ENTRADA_LEADS_STAGE_ID:
-            elapsed_ms = (time.monotonic() - start_time) * 1000
+        # 1) Filtro pipeline/stage alvo
+        if _should_ignore_by_target(pipeline_id, stage_id):
             logger.info(
-                f"{ctx} Ignorado: fora do alvo "
-                f"(esperado pipeline_id={MQL_PIPELINE_ID}, stage_id={ENTRADA_LEADS_STAGE_ID}). "
-                f"elapsed={elapsed_ms:.1f}ms"
+                "%s Ignorado: fora do alvo (esperado pipeline_id=%s, stage_id=%s). elapsed=%.1fms",
+                ctx,
+                MQL_PIPELINE_ID,
+                ENTRADA_LEADS_STAGE_ID,
+                _elapsed_ms(start_time),
             )
-            return {"status": "Ignorado: fora do alvo", "modo": settings.APP_ENV, "gerado": False}
+            return _webhook_response("Ignorado: fora do alvo", gerado=False)
 
-        # 2) Garantir deal_id
+        # 2) deal_id obrigatório
         if deal_id is None:
-            logger.error(f"{ctx} Erro: deal_id ausente (data.id/meta.entity_id).")
-            return {"status": "Erro controlado: deal_id ausente", "modo": settings.APP_ENV, "gerado": False}
+            logger.error("%s Erro controlado: deal_id ausente (data.id/meta.entity_id).", ctx)
+            return _webhook_response("Erro controlado: deal_id ausente", gerado=False)
 
-        # 3) Idempotência forte
+        # 3) Idempotência
         if has_generated(deal_id, stage_id):
-            elapsed_ms = (time.monotonic() - start_time) * 1000
-            logger.info(f"{ctx} Ignorado: já gerado para este deal/stage. elapsed={elapsed_ms:.1f}ms")
-            return {"status": "Ignorado: proposta já gerada", "modo": settings.APP_ENV, "gerado": False}
+            logger.info(
+                "%s Ignorado: proposta já gerada para deal/stage. elapsed=%.1fms",
+                ctx,
+                _elapsed_ms(start_time),
+            )
+            return _webhook_response("Ignorado: proposta já gerada", gerado=False)
 
-        # 4) Bloqueio leve (reduz ruído)
+        # 4) Ignorar edição dentro do mesmo stage (reduz ruído)
         if prev_stage_id is not None and prev_stage_id == ENTRADA_LEADS_STAGE_ID:
-            elapsed_ms = (time.monotonic() - start_time) * 1000
-            logger.info(f"{ctx} Ignorado: edição no mesmo stage. elapsed={elapsed_ms:.1f}ms")
-            return {"status": "Ignorado: edição no mesmo stage", "modo": settings.APP_ENV, "gerado": False}
+            logger.info(
+                "%s Ignorado: edição no mesmo stage. elapsed=%.1fms",
+                ctx,
+                _elapsed_ms(start_time),
+            )
+            return _webhook_response("Ignorado: edição no mesmo stage", gerado=False)
 
-        # 5) Otimização: usar dados do webhook se já vierem completos
-        # (se title/value vierem nulos, cai no buscar_deal)
+        # 5) Obter dados (webhook ou Pipedrive)
         title_from_webhook = getattr(data, "title", None)
         value_from_webhook = getattr(data, "value", None)
 
-        if title_from_webhook is not None or value_from_webhook is not None:
-            logger.info(f"{ctx} Usando title/value do webhook (quando disponíveis).")
+        try:
+            deal = _fetch_deal_if_needed(
+                deal_id=deal_id,
+                title_from_webhook=title_from_webhook,
+                value_from_webhook=value_from_webhook,
+                ctx=ctx,
+            )
+        except PipedriveNotFoundError as exc:
+            logger.warning("%s Deal não encontrado: %s", ctx, exc)
+            return _webhook_response("Erro controlado: deal não encontrado", gerado=False)
+        except PipedriveRateLimitError as exc:
+            logger.error("%s Rate limit Pipedrive: %s", ctx, exc)
+            return _webhook_response("Erro controlado: rate limit pipedrive", gerado=False)
+        except PipedriveUnavailableError as exc:
+            logger.error("%s Pipedrive indisponível: %s", ctx, exc)
+            return _webhook_response("Erro controlado: pipedrive indisponível", gerado=False)
+        except PipedriveInvalidResponseError as exc:
+            logger.error("%s Resposta inválida do Pipedrive: %s", ctx, exc)
+            return _webhook_response("Erro controlado: resposta inválida", gerado=False)
+        except PipedriveError as exc:
+            logger.error("%s Erro genérico do Pipedrive: %s", ctx, exc)
+            return _webhook_response("Erro controlado: falha no pipedrive", gerado=False)
 
-        # Se não vierem dados suficientes, consulta o Pipedrive
-        deal = None
-        if not title_from_webhook and value_from_webhook is None:
-            logger.info(f"{ctx} Buscando dados no Pipedrive...")
-            try:
-                deal = buscar_deal(deal_id)
-            except PipedriveDealNotFoundError as e:
-                logger.warning(f"{ctx} Deal não encontrado: {e}")
-                return {"status": "Erro controlado: deal não encontrado", "modo": settings.APP_ENV, "gerado": False}
-            except PipedriveUnavailableError as e:
-                logger.error(f"{ctx} Pipedrive indisponível: {e}")
-                return {"status": "Erro controlado: pipedrive indisponível", "modo": settings.APP_ENV, "gerado": False}
-            except PipedriveInvalidResponseError as e:
-                logger.error(f"{ctx} Resposta inválida do Pipedrive: {e}")
-                return {"status": "Erro controlado: resposta inválida", "modo": settings.APP_ENV, "gerado": False}
-            except PipedriveError as e:
-                logger.error(f"{ctx} Erro genérico do Pipedrive: {e}")
-                return {"status": "Erro controlado: falha no pipedrive", "modo": settings.APP_ENV, "gerado": False}
+        # 6) Montar dados finais para PDF
+        source = deal or {}
+        final_deal_id = source.get("id", deal_id)
+        final_title = source.get("title", title_from_webhook)
+        final_value = source.get("value", value_from_webhook)
 
-        # 6) Montar dados com fallback + normalização
-        raw_id = deal.get("id") if deal else deal_id
-        raw_title = (deal.get("title") if deal else title_from_webhook)
-        raw_value = (deal.get("value") if deal else value_from_webhook)
+        dados = _build_pdf_payload(
+            deal_id=final_deal_id,
+            title=final_title,
+            value=final_value,
+        )
 
-        dados = {
-            "id": raw_id,
-            "cliente": _normalize_cliente(raw_title),
-            "valor": _normalize_valor(raw_value),
-        }
+        logger.info(
+            "%s Gerando PDF... dados(id=%s, cliente=%s, valor=%s)",
+            ctx,
+            dados["id"],
+            dados["cliente"],
+            dados["valor"],
+        )
 
-        logger.info(f"{ctx} Gerando PDF... dados(id={dados['id']}, cliente={dados['cliente']}, valor={dados['valor']})")
         pdf_path = gerar_pdf(dados)
 
-        # 7) Marcar como gerado (só após sucesso)
+        # 7) Marca idempotência somente após sucesso
         mark_generated(deal_id, stage_id)
 
-        elapsed_ms = (time.monotonic() - start_time) * 1000
-        logger.info(f"{ctx} PDF gerado e marcado em SQLite. arquivo={pdf_path} elapsed={elapsed_ms:.1f}ms")
-        return {"status": "PDF gerado com sucesso", "arquivo": pdf_path, "modo": settings.APP_ENV, "gerado": True}
+        logger.info(
+            "%s PDF gerado e marcado. arquivo=%s elapsed=%.1fms",
+            ctx,
+            pdf_path,
+            _elapsed_ms(start_time),
+        )
+        return _webhook_response("PDF gerado com sucesso", gerado=True, arquivo=pdf_path)
 
-    except Exception as e:
-        # ✅ Webhook em produção: evitar 500 pro Pipedrive (reduz retry e duplicidade)
-        elapsed_ms = (time.monotonic() - start_time) * 1000
-        logger.exception(f"Erro inesperado no webhook. elapsed={elapsed_ms:.1f}ms")
-        return {"status": "Erro controlado", "modo": settings.APP_ENV, "gerado": False}
+    except Exception:
+        logger.exception(
+            "Erro inesperado no webhook. elapsed=%.1fms",
+            _elapsed_ms(start_time),
+        )
+        # Erro controlado (evita cascata de retries do webhook provider)
+        return _webhook_response("Erro controlado", gerado=False)

@@ -1,0 +1,5 @@
+2026-02-25 10:55:09,501 | INFO | app.api.webhook | [deal_id=999 pipeline_id=4 stage_id=21 prev_stage_id=None corr=None] Rodando em modo DEV (mock)
+2026-02-25 10:55:09,548 | INFO | app.services.proposal_state_service | [PROPOSAL_STATE] has_generated(deal_id=999, stage_id=21) -> False
+2026-02-25 10:55:09,549 | INFO | app.api.webhook | [deal_id=999 pipeline_id=4 stage_id=21 prev_stage_id=None corr=None] [DEV] Gerando PDF...
+2026-02-25 10:55:09,628 | INFO | app.services.proposal_state_service | [PROPOSAL_STATE] mark_generated(deal_id=999, stage_id=21, generated_at=2026-02-25T13:55:09.621127+00:00)
+2026-02-25 10:55:09,629 | INFO | app.api.webhook | [deal_id=999 pipeline_id=4 stage_id=21 prev_stage_id=None corr=None] [DEV] PDF gerado. arquivo=proposta_999.pdf elapsed=130.5ms
