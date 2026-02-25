@@ -3,3 +3,227 @@
 2026-02-25 10:55:09,549 | INFO | app.api.webhook | [deal_id=999 pipeline_id=4 stage_id=21 prev_stage_id=None corr=None] [DEV] Gerando PDF...
 2026-02-25 10:55:09,628 | INFO | app.services.proposal_state_service | [PROPOSAL_STATE] mark_generated(deal_id=999, stage_id=21, generated_at=2026-02-25T13:55:09.621127+00:00)
 2026-02-25 10:55:09,629 | INFO | app.api.webhook | [deal_id=999 pipeline_id=4 stage_id=21 prev_stage_id=None corr=None] [DEV] PDF gerado. arquivo=proposta_999.pdf elapsed=130.5ms
+2026-02-25 11:22:31,201 | INFO | app.api.webhook | [deal_id=0 pipeline_id=0 stage_id=0 prev_stage_id=0 corr=string] Payload recebido (Pydantic).
+2026-02-25 11:22:31,209 | INFO | app.api.webhook | {
+  "event": "string",
+  "retry": 0,
+  "meta": {
+    "entity_id": "string",
+    "correlation_id": "string",
+    "entity": "string",
+    "version": "string",
+    "webhook_id": "string",
+    "additionalProp1": {}
+  },
+  "data": {
+    "id": 0,
+    "title": "string",
+    "value": 0.0,
+    "pipeline_id": 0,
+    "stage_id": 0,
+    "additionalProp1": {}
+  },
+  "previous": {
+    "stage_id": 0,
+    "additionalProp1": {}
+  },
+  "additionalProp1": {}
+}
+2026-02-25 11:22:31,222 | INFO | app.api.webhook | [deal_id=0 pipeline_id=0 stage_id=0 prev_stage_id=0 corr=string] Ignorado: fora do alvo (esperado pipeline_id=4, stage_id=21). elapsed=21.4ms
+2026-02-25 11:24:42,433 | INFO | app.api.webhook | [deal_id=123456 pipeline_id=4 stage_id=21 prev_stage_id=20 corr=teste-local-001] Payload recebido (Pydantic).
+2026-02-25 11:24:42,453 | INFO | app.api.webhook | {
+  "event": null,
+  "retry": 0,
+  "meta": {
+    "entity_id": "123456",
+    "correlation_id": "teste-local-001",
+    "entity": null,
+    "version": null,
+    "webhook_id": null
+  },
+  "data": {
+    "id": 123456,
+    "title": "Cliente Teste Webhook",
+    "value": 5000.0,
+    "pipeline_id": 4,
+    "stage_id": 21
+  },
+  "previous": {
+    "stage_id": 20
+  }
+}
+2026-02-25 11:24:43,735 | INFO | app.services.proposal_state_service_pg | [PROPOSAL_STATE_PG] has_generated(deal_id=123456, stage_id=21) -> False
+2026-02-25 11:24:43,738 | INFO | app.api.webhook | [deal_id=123456 pipeline_id=4 stage_id=21 prev_stage_id=20 corr=teste-local-001] Usando title/value do webhook (quando disponíveis).
+2026-02-25 11:24:43,741 | INFO | app.api.webhook | [deal_id=123456 pipeline_id=4 stage_id=21 prev_stage_id=20 corr=teste-local-001] Gerando PDF... dados(id=123456, cliente=Cliente Teste Webhook, valor=5000.0)
+2026-02-25 11:24:44,915 | INFO | app.services.proposal_state_service_pg | [PROPOSAL_STATE_PG] mark_generated(deal_id=123456, stage_id=21, generated_at=2026-02-25T14:24:43.856624+00:00)
+2026-02-25 11:24:44,916 | INFO | app.api.webhook | [deal_id=123456 pipeline_id=4 stage_id=21 prev_stage_id=20 corr=teste-local-001] PDF gerado e marcado. arquivo=proposta_123456.pdf elapsed=2486.3ms
+2026-02-25 11:26:29,402 | INFO | app.api.webhook | [deal_id=123456 pipeline_id=4 stage_id=21 prev_stage_id=20 corr=teste-local-001] Payload recebido (Pydantic).
+2026-02-25 11:26:29,404 | INFO | app.api.webhook | {
+  "event": null,
+  "retry": 0,
+  "meta": {
+    "entity_id": "123456",
+    "correlation_id": "teste-local-001",
+    "entity": null,
+    "version": null,
+    "webhook_id": null
+  },
+  "data": {
+    "id": 123456,
+    "title": "Cliente Teste Webhook",
+    "value": 5000.0,
+    "pipeline_id": 4,
+    "stage_id": 21
+  },
+  "previous": {
+    "stage_id": 20
+  }
+}
+2026-02-25 11:26:30,663 | INFO | app.services.proposal_state_service_pg | [PROPOSAL_STATE_PG] has_generated(deal_id=123456, stage_id=21) -> True
+2026-02-25 11:26:30,665 | INFO | app.api.webhook | [deal_id=123456 pipeline_id=4 stage_id=21 prev_stage_id=20 corr=teste-local-001] Ignorado: proposta já gerada para deal/stage. elapsed=1262.7ms
+2026-02-25 11:27:20,250 | INFO | app.api.webhook | [deal_id=123456 pipeline_id=4 stage_id=21 prev_stage_id=20 corr=teste-local-002] Payload recebido (Pydantic).
+2026-02-25 11:27:20,255 | INFO | app.api.webhook | {
+  "event": null,
+  "retry": 0,
+  "meta": {
+    "entity_id": "123456",
+    "correlation_id": "teste-local-002",
+    "entity": null,
+    "version": null,
+    "webhook_id": null
+  },
+  "data": {
+    "id": 123456,
+    "title": null,
+    "value": null,
+    "pipeline_id": 4,
+    "stage_id": 21
+  },
+  "previous": {
+    "stage_id": 20
+  }
+}
+2026-02-25 11:27:21,798 | INFO | app.services.proposal_state_service_pg | [PROPOSAL_STATE_PG] has_generated(deal_id=123456, stage_id=21) -> True
+2026-02-25 11:27:21,799 | INFO | app.api.webhook | [deal_id=123456 pipeline_id=4 stage_id=21 prev_stage_id=20 corr=teste-local-002] Ignorado: proposta já gerada para deal/stage. elapsed=1549.9ms
+2026-02-25 11:29:44,712 | INFO | app.api.webhook | [deal_id=123450 pipeline_id=99 stage_id=10 prev_stage_id=9 corr=teste-filtro-001] Payload recebido (Pydantic).
+2026-02-25 11:29:44,729 | INFO | app.api.webhook | {
+  "event": null,
+  "retry": 0,
+  "meta": {
+    "entity_id": "123450",
+    "correlation_id": "teste-filtro-001",
+    "entity": null,
+    "version": null,
+    "webhook_id": null
+  },
+  "data": {
+    "id": 123450,
+    "title": "Cliente Fora do Alvo",
+    "value": 1500.0,
+    "pipeline_id": 99,
+    "stage_id": 10
+  },
+  "previous": {
+    "stage_id": 9
+  }
+}
+2026-02-25 11:29:44,732 | INFO | app.api.webhook | [deal_id=123450 pipeline_id=99 stage_id=10 prev_stage_id=9 corr=teste-filtro-001] Ignorado: fora do alvo (esperado pipeline_id=4, stage_id=21). elapsed=22.2ms
+2026-02-25 11:30:21,983 | INFO | app.api.webhook | [deal_id=123456 pipeline_id=4 stage_id=21 prev_stage_id=20 corr=teste-local-001] Payload recebido (Pydantic).
+2026-02-25 11:30:21,985 | INFO | app.api.webhook | {
+  "event": null,
+  "retry": 0,
+  "meta": {
+    "entity_id": "123456",
+    "correlation_id": "teste-local-001",
+    "entity": null,
+    "version": null,
+    "webhook_id": null
+  },
+  "data": {
+    "id": 123456,
+    "title": "Cliente Teste Webhook",
+    "value": 5000.0,
+    "pipeline_id": 4,
+    "stage_id": 21
+  },
+  "previous": {
+    "stage_id": 20
+  }
+}
+2026-02-25 11:30:23,244 | INFO | app.services.proposal_state_service_pg | [PROPOSAL_STATE_PG] has_generated(deal_id=123456, stage_id=21) -> True
+2026-02-25 11:30:23,246 | INFO | app.api.webhook | [deal_id=123456 pipeline_id=4 stage_id=21 prev_stage_id=20 corr=teste-local-001] Ignorado: proposta já gerada para deal/stage. elapsed=1263.3ms
+2026-02-25 11:30:41,532 | INFO | app.api.webhook | [deal_id=123456 pipeline_id=4 stage_id=21 prev_stage_id=20 corr=teste-local-001] Payload recebido (Pydantic).
+2026-02-25 11:30:41,534 | INFO | app.api.webhook | {
+  "event": null,
+  "retry": 0,
+  "meta": {
+    "entity_id": "123456",
+    "correlation_id": "teste-local-001",
+    "entity": null,
+    "version": null,
+    "webhook_id": null
+  },
+  "data": {
+    "id": 123456,
+    "title": "Cliente Teste Webhook",
+    "value": 5000.0,
+    "pipeline_id": 4,
+    "stage_id": 21
+  },
+  "previous": {
+    "stage_id": 20
+  }
+}
+2026-02-25 11:30:42,670 | INFO | app.services.proposal_state_service_pg | [PROPOSAL_STATE_PG] has_generated(deal_id=123456, stage_id=21) -> True
+2026-02-25 11:30:42,673 | INFO | app.api.webhook | [deal_id=123456 pipeline_id=4 stage_id=21 prev_stage_id=20 corr=teste-local-001] Ignorado: proposta já gerada para deal/stage. elapsed=1140.7ms
+2026-02-25 11:31:11,756 | INFO | app.api.webhook | [deal_id=123789 pipeline_id=4 stage_id=21 prev_stage_id=19 corr=teste-meta-entity-001] Payload recebido (Pydantic).
+2026-02-25 11:31:11,761 | INFO | app.api.webhook | {
+  "event": null,
+  "retry": 0,
+  "meta": {
+    "entity_id": "123789",
+    "correlation_id": "teste-meta-entity-001",
+    "entity": null,
+    "version": null,
+    "webhook_id": null
+  },
+  "data": {
+    "id": null,
+    "title": "Cliente via meta.entity_id",
+    "value": 3200.0,
+    "pipeline_id": 4,
+    "stage_id": 21
+  },
+  "previous": {
+    "stage_id": 19
+  }
+}
+2026-02-25 11:31:12,934 | INFO | app.services.proposal_state_service_pg | [PROPOSAL_STATE_PG] has_generated(deal_id=123789, stage_id=21) -> False
+2026-02-25 11:31:12,937 | INFO | app.api.webhook | [deal_id=123789 pipeline_id=4 stage_id=21 prev_stage_id=19 corr=teste-meta-entity-001] Usando title/value do webhook (quando disponíveis).
+2026-02-25 11:31:12,939 | INFO | app.api.webhook | [deal_id=123789 pipeline_id=4 stage_id=21 prev_stage_id=19 corr=teste-meta-entity-001] Gerando PDF... dados(id=123789, cliente=Cliente via meta.entity_id, valor=3200.0)
+2026-02-25 11:31:14,532 | INFO | app.services.proposal_state_service_pg | [PROPOSAL_STATE_PG] mark_generated(deal_id=123789, stage_id=21, generated_at=2026-02-25T14:31:13.005823+00:00)
+2026-02-25 11:31:14,540 | INFO | app.api.webhook | [deal_id=123789 pipeline_id=4 stage_id=21 prev_stage_id=19 corr=teste-meta-entity-001] PDF gerado e marcado. arquivo=proposta_123789.pdf elapsed=2783.3ms
+2026-02-25 11:31:48,359 | INFO | app.api.webhook | [deal_id=123789 pipeline_id=4 stage_id=21 prev_stage_id=19 corr=teste-meta-entity-001] Payload recebido (Pydantic).
+2026-02-25 11:31:48,360 | INFO | app.api.webhook | {
+  "event": null,
+  "retry": 0,
+  "meta": {
+    "entity_id": "123789",
+    "correlation_id": "teste-meta-entity-001",
+    "entity": null,
+    "version": null,
+    "webhook_id": null
+  },
+  "data": {
+    "id": null,
+    "title": "Cliente via meta.entity_id",
+    "value": 3200.0,
+    "pipeline_id": 4,
+    "stage_id": 21
+  },
+  "previous": {
+    "stage_id": 19
+  }
+}
+2026-02-25 11:31:49,907 | INFO | app.services.proposal_state_service_pg | [PROPOSAL_STATE_PG] has_generated(deal_id=123789, stage_id=21) -> True
+2026-02-25 11:31:49,908 | INFO | app.api.webhook | [deal_id=123789 pipeline_id=4 stage_id=21 prev_stage_id=19 corr=teste-meta-entity-001] Ignorado: proposta já gerada para deal/stage. elapsed=1549.0ms
